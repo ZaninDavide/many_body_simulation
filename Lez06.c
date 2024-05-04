@@ -351,7 +351,7 @@ int main() {
     sigma_comp /= (steps / 2);
 
     // NON E' NUMERICAMENTE STABILE
-    printf("Temperatura = %f ± %f\nCompressibilità = %f ± %f", avg_temp, sigma_temp, avg_comp, sigma_comp);
+    printf("Temperatura = %f ± %f\nCompressibilità = %f ± %f\n", avg_temp, sigma_temp, avg_comp, sigma_comp);
 
     FILE* histogram = fopen("histogram.dat", "w+");
     distribution_histogram(S0, histogram); // g(r)
