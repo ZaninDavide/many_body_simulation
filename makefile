@@ -1,5 +1,5 @@
 Lez06.x: Lez06.c
-	gcc -o Lez06.x Lez06.c
+	gcc -o Lez06.x Lez06.c -lm
 
 build: Lez06.x
 

@@ -4,7 +4,7 @@
 #include <string.h>
 #include <time.h>
 
-#define CROW 2 // Number of cells in a row
+#define CROW 6 // Number of cells in a row
 #define M 4 // Number of particles in a cell
 #define rho 0.8
 #define m 1.0
@@ -29,6 +29,7 @@ typedef struct vec3 {
 typedef struct Measure {
     double temp; // temperature
     double comp; // compressibilità
+    double ener; // energia
 } Measure;
 
 void swap_pointer(void** p1, void** p2) {
@@ -82,8 +83,8 @@ Measure* vverlet(Particle S0[], void (*get_forces)(Particle S[], vec3 F[]), Meas
     }
 
     for(int i = 1; i <= steps; i++) {
-        // Every once in a while recenter the positions
-        // if(i % 100 == 100 - 1) { recenter_particles(S0); }
+        // Recenter the positions
+        // recenter_particles(S0);
         // Avendo le posizioni, le velocità e le forze al tempo t0 ottengo le nuove posizioni
         for(int k = 0; k < N; k++) {
             S1[k].x = S0[k].x + dt*S0[k].vx + 0.5*F0[k].x/m*dt*dt;
@@ -148,17 +149,18 @@ void initialize_velocities(Particle S0[]) {
         double x1 = rand()/(RAND_MAX + 1.0);
         double x2 = rand()/(RAND_MAX + 1.0);
         double factor_x = sigma*sqrt(-2*log(1-x2));
-        S0[i  ].vx = factor_x*cos(2*PI*x1);
 
         double y1 = rand()/(RAND_MAX + 1.0);
         double y2 = rand()/(RAND_MAX + 1.0);
         double factor_y = sigma*sqrt(-2*log(1-y2));
-        S0[i  ].vy = factor_y*cos(2*PI*y1);
 
         double z1 = rand()/(RAND_MAX + 1.0);
         double z2 = rand()/(RAND_MAX + 1.0);
         double factor_z = sigma*sqrt(-2*log(1-z2));
-        S0[i  ].vz = factor_z*cos(2*PI*z1);
+        
+        S0[i].vx = factor_x*cos(2*PI*x1);
+        S0[i].vy = factor_y*cos(2*PI*y1);
+        S0[i].vz = factor_z*cos(2*PI*z1);
 
         if(i + 1 < N) {
             S0[i+1].vx = factor_x*sin(2*PI*x1);
@@ -172,10 +174,12 @@ void oscillatore_armonico(Particle S[], vec3 F[]) {
     F[0].x = -S[0].x;
 }
 
+double W_forces = 0.0;
 // Calculates the forces produced by the Lennard-Jones potential
 void lennard_jones(Particle S[], vec3 F[]) {
-    double sigma2 = Kb*T/m;
-    
+    double sigma2 = 1.0;
+
+    W_forces = 0.0;
     memset(F, 0, N*sizeof(vec3)); // zero out forces
     for(int i = 0; i < N; i++) {
         for(int j = 0; j < i; j++) {
@@ -188,7 +192,7 @@ void lennard_jones(Particle S[], vec3 F[]) {
             if(r2 < (L/2.0)*(L/2.0)) { // truncate forces after r = L/2
                 double sr2 = sigma2 / r2;
                 double sr6 = sr2 * sr2 * sr2;
-                double factor = 24.0*epsilon*sr6*(2.0*sr6 - 1.0);
+                double factor = 24.0*epsilon*sr6*(2.0*sr6 - 1.0) / r2; 
                 vec3 Fij = (vec3) { Rij.x * factor, Rij.y * factor, Rij.z * factor };
                 F[i].x += Fij.x;
                 F[i].y += Fij.y;
@@ -196,22 +200,25 @@ void lennard_jones(Particle S[], vec3 F[]) {
                 F[j].x -= Fij.x;
                 F[j].y -= Fij.y;
                 F[j].z -= Fij.z;
+                W_forces += Fij.x*Rij.x + Fij.y*Rij.y + Fij.z*Rij.z;
             }
         }
     }
+    W_forces /= N;
 }
 
 FILE* file_measures = NULL;
 Measure measure(Particle S[], vec3 F[], double time) {
+    // <Ek> = 3/2.Kb.T
     double Ek = 0.0;
     for(int k = 0; k < N; k++) {
         Ek += 0.5 * m * (S[k].vx*S[k].vx + S[k].vy*S[k].vy + S[k].vz*S[k].vz);
     }
-    // <Ek> = 3/2.Kb.T
     double temperature = 2.0 / 3.0 / Kb * (Ek / N);
 
     // V(L/2)
-    double sigma2 = Kb*T/m;
+    double a = L / (double)CROW;
+    double sigma2 = 1.0;
     double sigma_su_L_mezzi_2 = sigma2 / (L/2) / (L/2);
     double sigma_su_L_mezzi_6 = sigma_su_L_mezzi_2 * sigma_su_L_mezzi_2 * sigma_su_L_mezzi_2;
     double V_L_mezzi = 4*epsilon*sigma_su_L_mezzi_6*(sigma_su_L_mezzi_6 - 1);
@@ -226,28 +233,18 @@ Measure measure(Particle S[], vec3 F[], double time) {
             };
             double r2 = Rij.x*Rij.x + Rij.y*Rij.y + Rij.z*Rij.z;
             if(r2 < (L/2)*(L/2)) { // truncate forces after r = L/2
-                double sr6 = powf(sigma2 / r2, 3.0);
+                double sr6 = pow(sigma2 / r2, 3.0);
                 Epot += 4*epsilon*sr6*(sr6 - 1) - V_L_mezzi;
             }
         }
     }
-
-    // Pressure
-    double W = 0.0;
-    for(int i = 0; i < N; i++) {
-        vec3 Ri = (vec3) {
-            S[i].x - L * rint(S[i].x / L),
-            S[i].y - L * rint(S[i].y / L),
-            S[i].z - L * rint(S[i].z / L),
-        };
-        W += F[i].x*Ri.x + F[i].y*Ri.y + F[i].z*Ri.z;
-    }
-    W = W / N;
-    double compressibilità = 1 + W / 3.0 / rho / Kb / temperature;
+    
+    // Compressibilità
+    double compressibilità = 1 + W_forces / 3.0 / rho / Kb / temperature;
 
     if(file_measures) fprintf(file_measures, "%10.5e %10.5e %10.5e %10.5e %10.5e %10.5e\n", time, temperature, Ek / N, Epot / N, (Ek + Epot) / N, compressibilità);
 
-    return (Measure) { temperature, compressibilità };
+    return (Measure) { temperature, compressibilità, (Ek + Epot) / N };
 }
 
 void distribution_histogram(Particle S[], FILE* file) {
@@ -266,47 +263,19 @@ void distribution_histogram(Particle S[], FILE* file) {
             int bin_index = r / bin_width;
             if(r > sqrt(3)*L) { printf("Distanza fuori scala %f > %f\n", r, L);  }
             if(bin_index > BINS - 1) { 
-                printf("Indice fuori scala %d > %d\n", bin_index, BINS); 
-                // printf("Si  = [%f, %f, %f]\n", S[i].x, S[i].y, S[i].z); 
-                // printf("Sj  = [%f, %f, %f]\n", S[j].x, S[j].y, S[j].z); 
-                // printf("Rij = [%f, %f, %f]\n", Rij.x, Rij.y, Rij.z); 
+                printf("Indice fuori scala %d > %d\n", bin_index, BINS);
             } else {
                 histogram[bin_index] += 1; 
             }
         }
     }
 
-    // normalize and print to file
+    // Normalize and print to file
     for (int j = 1; j < BINS; j++) {
         double dV = 4*PI/3.0*((j+1)*(j+1)*(j+1) - j*j*j)*bin_width*bin_width*bin_width;
         histogram[j] /= dV * rho * N;
         fprintf(file, "%10.5e %10.5e\n", (j + 0.0) / BINS, histogram[j]);
     }
-}
-
-void tests() {
-    double a_value = 5;
-    double b_value = 10;
-    double* a = &a_value;
-    double* b = &b_value;
-    swap_pointer((void**)&a, (void**)&b);
-    printf("*a = %f\n", *a);
-    printf("*b = %f\n", *b);
-
-    double arr[] = { 1.0, 2.0, 3.0, 4.0, 5.0 };
-    memset(arr, 0, 5*sizeof(double));
-    printf("arr = {%f, %f, %f, %f, %f}\n", arr[0], arr[1], arr[2], arr[3], arr[4]);
-
-    vec3 CC[1]  = { (vec3){0, 0, 0} };
-    vec3 BCC[2] = { (vec3){0, 0, 0}, (vec3){0.5, 0.5, 0.5} };
-    vec3 FCC[4] = { (vec3){0, 0, 0}, (vec3){0.5, 0.5, 0}, (vec3){0.5, 0, 0.5}, (vec3){0, 0.5, 0.5} };
-    vec3* CELL_TYPES[] = {NULL, CC, BCC, NULL, FCC};
-    printf("FCC = {  (vec3){%f, %f, %f}, (vec3){%f, %f, %f}, (vec3){%f, %f, %f}, (vec3){%f, %f, %f}  }",
-        CELL_TYPES[4][0].x, CELL_TYPES[4][0].y, CELL_TYPES[4][0].z,
-        CELL_TYPES[4][1].x, CELL_TYPES[4][1].y, CELL_TYPES[4][1].z,
-        CELL_TYPES[4][2].x, CELL_TYPES[4][2].y, CELL_TYPES[4][2].z,
-        CELL_TYPES[4][3].x, CELL_TYPES[4][3].y, CELL_TYPES[4][3].z
-    );
 }
 
 int main() {
@@ -316,46 +285,45 @@ int main() {
     // vverlet(S0osc, oscillatore_armonico, NULL, 0.01, 5000, file_osc);
     // return 0;
 
-    // tests();
-    // return 0;
-
     file_measures = fopen("measures.dat", "w+");
 
     // rho = N/L3 = P3*M/L3
-    L = CROW * powf(M / rho, 1.0/3.0);
+    L = CROW * pow(M / rho, 1.0/3.0);
 
     Particle* S0 = malloc(sizeof(Particle) * N);
     initialize_positions(S0);
     initialize_velocities(S0);
 
     FILE* file = NULL; // fopen("gas.dat", "w+");
-    unsigned int steps = 3000;
+    unsigned int steps = 0.5e3;
     Measure* measures = vverlet(S0, lennard_jones, measure, 0.001, steps, file);
 
-    // Average temperature
-    double avg_temp = 0.0;
-    double avg_comp = 0.0;
+    // Averages, not numerically stable
+    Measure avg = (Measure) {0, 0, 0};
     for(int i = steps / 2; i <= steps; i++) { 
-        avg_temp += measures[i].temp; 
-        avg_comp += measures[i].comp; 
+        avg.temp += measures[i].temp; 
+        avg.comp += measures[i].comp; 
+        avg.ener += measures[i].ener; 
     }
-    avg_temp /= (steps / 2);
-    avg_comp /= (steps / 2);
-    double sigma_temp = 0.0;
-    double sigma_comp = 0.0;
+    avg.temp /= (steps / 2);
+    avg.comp /= (steps / 2);
+    avg.ener /= (steps / 2);
+    Measure sigma = (Measure) {0, 0, 0};
     for(int i = steps / 2; i <= steps; i++) { 
-        sigma_temp += (measures[i].temp - avg_temp)*(measures[i].temp - avg_temp); 
-        sigma_comp += (measures[i].comp - avg_comp)*(measures[i].comp - avg_comp); 
+        sigma.temp += (measures[i].temp - avg.temp)*(measures[i].temp - avg.temp); 
+        sigma.comp += (measures[i].comp - avg.comp)*(measures[i].comp - avg.comp); 
+        sigma.ener += (measures[i].ener - avg.ener)*(measures[i].ener - avg.ener); 
     }
-    sigma_temp /= (steps / 2);
-    sigma_comp /= (steps / 2);
+    sigma.temp /= (steps / 2);
+    sigma.comp /= (steps / 2);
+    sigma.ener /= (steps / 2);
 
-    // NON E' NUMERICAMENTE STABILE
-    printf("Temperatura = %f ± %f\nCompressibilità = %f ± %f\n", avg_temp, sigma_temp, avg_comp, sigma_comp);
+    printf("Temperatura = %f ± %f\n", avg.temp, sigma.temp);
+    printf("Compressibilità = %f ± %f\n", avg.comp, sigma.comp);
+    printf("Energia = %f ± %2.5e\n", avg.ener, sigma.ener);
 
     FILE* histogram = fopen("histogram.dat", "w+");
     distribution_histogram(S0, histogram); // g(r)
-
 
     FILE* scatter = fopen("scatter.dat", "w+");
     vec3 center = (vec3) {L/2, L/2, L/2};

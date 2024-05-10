@@ -12,6 +12,7 @@ set multiplot layout 1,2
 # L = 5.928156    # M = 2, rho = 1.2
 # L = 4.705180  # M = 1, rho = 1.2
 L = 8.549880
+# L = 36.840317
 
 set title sprintf("Particle grid at t = 0, L = %f", L)
 
