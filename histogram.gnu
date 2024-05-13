@@ -16,8 +16,8 @@ set ylabel "g(r)"
 # plot "histogram.dat" using 1:2 with lines
 
 # Histogram
-set offset graph 0.05,0.05,0.05,0.0
+# set offset graph 0.05,0.05,0.05,0.0
 set boxwidth 0.00666666666667 # 1 / BINS
 set style fill solid 0.20 #fillstyle
 set tics out nomirror
-plot "histogram.dat" using ($1 - 0.025):2 with boxes title "g(r) = (dn/dV)/ρ"
+plot "histogram.dat" using ($1 + 0.00333333333334):2 with boxes title "g(r) = (dn/dV)/ρ"

@@ -4,8 +4,8 @@
 #include <string.h>
 #include <time.h>
 
-#define CROW 6 // Number of cells in a row
-#define M 4 // Number of particles in a cell
+#define CROW 7 // Number of cells in a row
+#define M 2 // Number of particles in a cell
 #define rho 0.8
 #define m 1.0
 #define Kb 1.0
@@ -16,6 +16,7 @@
 
 #define N (CROW*CROW*CROW*M) // Total number of particles
 double L = 0.0; // periodicity, will be overwritten
+double* histogram;
 
 typedef struct Particle {
     double x; double y; double z;
@@ -57,6 +58,38 @@ void recenter_particles(Particle S[]) {
         S[i].x = pos.x;
         S[i].y = pos.y;
         S[i].z = pos.z;
+    }
+}
+
+void add_to_distribution_histogram(Particle S[]) {
+    double bin_width = L / BINS;
+    for (int i = 1; i < N; i++) {
+        for (int j = 1; j < N; j++) {
+            if(i == j) continue;
+            vec3 Rij = (vec3) {
+                (S[i].x - S[j].x) - L * rint((S[i].x - S[j].x)/L),
+                (S[i].y - S[j].y) - L * rint((S[i].y - S[j].y)/L),
+                (S[i].z - S[j].z) - L * rint((S[i].z - S[j].z)/L),
+            };
+            double r = sqrt(Rij.x*Rij.x + Rij.y*Rij.y + Rij.z*Rij.z);
+            int bin_index = r / bin_width;
+            if(r > sqrt(3)*L) { printf("Distanza fuori scala %f > %f\n", r, L);  }
+            if(bin_index > BINS - 1) { 
+                printf("Indice fuori scala %d > %d\n", bin_index, BINS);
+            } else {
+                histogram[bin_index] += 1; 
+            }
+        }
+    }
+}
+
+void save_distribution_histogram(FILE* file, unsigned int steps) {
+    double bin_width = L / BINS;
+    // Normalize and print to file
+    for (int j = 1; j < BINS; j++) {
+        double dV = 4*PI/3.0*((j+1)*(j+1)*(j+1) - j*j*j)*bin_width*bin_width*bin_width;
+        histogram[j] /= dV * rho * N * (steps/2);
+        fprintf(file, "%10.5e %10.5e\n", (j + 0.0) / BINS, histogram[j]);
     }
 }
 
@@ -104,6 +137,9 @@ Measure* vverlet(Particle S0[], void (*get_forces)(Particle S[], vec3 F[]), Meas
         // Misura delle osservabili
         if(measure && measures) {
             measures[i] = measure(S1, F1, i*dt);
+        }
+        if(histogram && i >= steps/2) {
+            add_to_distribution_histogram(S1);
         }
         // Preparo il prossimo ciclo
         swap_pointer((void**)&F0, (void**)&F1);
@@ -209,20 +245,20 @@ void lennard_jones(Particle S[], vec3 F[]) {
 
 FILE* file_measures = NULL;
 Measure measure(Particle S[], vec3 F[], double time) {
-    // <Ek> = 3/2.Kb.T
+    // Temperatura <Ek> = 3/2.Kb.T
     double Ek = 0.0;
     for(int k = 0; k < N; k++) {
         Ek += 0.5 * m * (S[k].vx*S[k].vx + S[k].vy*S[k].vy + S[k].vz*S[k].vz);
     }
     double temperature = 2.0 / 3.0 / Kb * (Ek / N);
 
-    // V(L/2)
+    // Potential energy
     double a = L / (double)CROW;
     double sigma2 = 1.0;
     double sigma_su_L_mezzi_2 = sigma2 / (L/2) / (L/2);
     double sigma_su_L_mezzi_6 = sigma_su_L_mezzi_2 * sigma_su_L_mezzi_2 * sigma_su_L_mezzi_2;
     double V_L_mezzi = 4*epsilon*sigma_su_L_mezzi_6*(sigma_su_L_mezzi_6 - 1);
-    // Potential energy
+    // 
     double Epot = 0.0;
     for(int i = 0; i < N; i++) {
         for(int j = 0; j < i; j++) {
@@ -247,38 +283,10 @@ Measure measure(Particle S[], vec3 F[], double time) {
     return (Measure) { temperature, compressibilità, (Ek + Epot) / N };
 }
 
-void distribution_histogram(Particle S[], FILE* file) {
-    double histogram[BINS];
-    memset(histogram, 0, BINS*sizeof(double)); // zero out histogram
-    double bin_width = L / BINS;
-    for (int i = 1; i < N; i++) {
-        for (int j = 1; j < N; j++) {
-            if(i == j) continue;
-            vec3 Rij = (vec3) {
-                (S[i].x - S[j].x) - L * rint((S[i].x - S[j].x)/L),
-                (S[i].y - S[j].y) - L * rint((S[i].y - S[j].y)/L),
-                (S[i].z - S[j].z) - L * rint((S[i].z - S[j].z)/L),
-            };
-            double r = sqrt(Rij.x*Rij.x + Rij.y*Rij.y + Rij.z*Rij.z);
-            int bin_index = r / bin_width;
-            if(r > sqrt(3)*L) { printf("Distanza fuori scala %f > %f\n", r, L);  }
-            if(bin_index > BINS - 1) { 
-                printf("Indice fuori scala %d > %d\n", bin_index, BINS);
-            } else {
-                histogram[bin_index] += 1; 
-            }
-        }
-    }
-
-    // Normalize and print to file
-    for (int j = 1; j < BINS; j++) {
-        double dV = 4*PI/3.0*((j+1)*(j+1)*(j+1) - j*j*j)*bin_width*bin_width*bin_width;
-        histogram[j] /= dV * rho * N;
-        fprintf(file, "%10.5e %10.5e\n", (j + 0.0) / BINS, histogram[j]);
-    }
-}
-
 int main() {
+    // Initialize constants
+    L = CROW * pow(M / rho, 1.0/3.0); // rho = N/L3 = P3*M/L3
+
     // To use these you need to #define N 1
     // FILE* file_osc = fopen("file_osc.dat", "w+");
     // Particle S0osc[] = { (Particle) { 1.0, 0.0, 0.0, 0.0, 0.0, 0.0 } };
@@ -286,16 +294,14 @@ int main() {
     // return 0;
 
     file_measures = fopen("measures.dat", "w+");
-
-    // rho = N/L3 = P3*M/L3
-    L = CROW * pow(M / rho, 1.0/3.0);
+    histogram = calloc(BINS, sizeof(double));
 
     Particle* S0 = malloc(sizeof(Particle) * N);
     initialize_positions(S0);
     initialize_velocities(S0);
 
     FILE* file = NULL; // fopen("gas.dat", "w+");
-    unsigned int steps = 0.5e3;
+    unsigned int steps = 70000;
     Measure* measures = vverlet(S0, lennard_jones, measure, 0.001, steps, file);
 
     // Averages, not numerically stable
@@ -317,14 +323,11 @@ int main() {
     sigma.temp /= (steps / 2);
     sigma.comp /= (steps / 2);
     sigma.ener /= (steps / 2);
-
     printf("Temperatura = %f ± %f\n", avg.temp, sigma.temp);
     printf("Compressibilità = %f ± %f\n", avg.comp, sigma.comp);
     printf("Energia = %f ± %2.5e\n", avg.ener, sigma.ener);
 
-    FILE* histogram = fopen("histogram.dat", "w+");
-    distribution_histogram(S0, histogram); // g(r)
-
+    // Scatter plot of particles' positions
     FILE* scatter = fopen("scatter.dat", "w+");
     vec3 center = (vec3) {L/2, L/2, L/2};
     for(int i = 0; i < N; i++) {
@@ -335,6 +338,10 @@ int main() {
         };
         fprintf(scatter, "%f %f %f\n", Ri.x, Ri.y, Ri.z);
     }
+
+    // Finalize and export histogram
+    FILE* histogram_file = fopen("histogram.dat", "w+");
+    save_distribution_histogram(histogram_file, steps);
 
     free(measures);
 
