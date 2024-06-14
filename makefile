@@ -21,6 +21,9 @@ histogram.png: histogram.dat histogram.gnu
 Lez06.png: Lez06.dat Lez06.gnu
 	gnuplot Lez06.gnu
 
-plot: scatter.png histogram.png Lez06.png
+varAvgB.png: varAvgB.dat varAvgB.gnu
+	gnuplot varAvgB.gnu
+
+plot: scatter.png histogram.png Lez06.png varAvgB.png
 
 all: build run plot

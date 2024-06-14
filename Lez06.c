@@ -3,19 +3,21 @@
 #include <math.h>
 #include <string.h>
 #include <time.h>
+#include <stdbool.h>
 
-#define CROW 7 // Number of cells in a row
-#define M 2 // Number of particles in a cell
+#define CROW 4 // Number of cells in a row
+#define M 4 // Number of particles in a cell
 #define rho 0.8
 #define m 1.0
 #define Kb 1.0
-#define T 1.8
+#define T 1.1
 #define epsilon 1.0
 #define PI 3.1415926535897932384626433
 #define BINS 150 // number of bins for the histogram of g(r)
 
 #define N (CROW*CROW*CROW*M) // Total number of particles
 double L = 0.0; // periodicity, will be overwritten
+double lennard_jones_L_halves = 0.0;
 double* histogram;
 
 typedef struct Particle {
@@ -115,7 +117,9 @@ Measure* vverlet(Particle S0[], void (*get_forces)(Particle S[], vec3 F[]), Meas
         measures[0] = measure(S0, F0, 0.0);
     }
 
+    printf("Step: 0/%d", steps);
     for(int i = 1; i <= steps; i++) {
+        if(i % 100 == 0) { printf("\rStep: %d/%d", i, steps); fflush(stdout); }
         // Recenter the positions
         // recenter_particles(S0);
         // Avendo le posizioni, le velocità e le forze al tempo t0 ottengo le nuove posizioni
@@ -145,6 +149,7 @@ Measure* vverlet(Particle S0[], void (*get_forces)(Particle S[], vec3 F[]), Meas
         swap_pointer((void**)&F0, (void**)&F1);
         swap_pointer((void**)&S0, (void**)&S1);
     }
+    printf("\rDone!\n");
 
     if(steps % 2 == 1) swap_pointer((void**)&S0, (void**)&S1);
 
@@ -155,10 +160,170 @@ Measure* vverlet(Particle S0[], void (*get_forces)(Particle S[], vec3 F[]), Meas
     return measures;
 }
 
+double lennard_jones_interaction(Particle S[], int i, int j) {
+    // Calculate V(L/2)
+    vec3 Rij = (vec3) {
+        (S[i].x - S[j].x) - L * rint((S[i].x - S[j].x)/L),
+        (S[i].y - S[j].y) - L * rint((S[i].y - S[j].y)/L),
+        (S[i].z - S[j].z) - L * rint((S[i].z - S[j].z)/L),
+    };
+    double r2 = Rij.x*Rij.x + Rij.y*Rij.y + Rij.z*Rij.z;
+    if(r2 < (L/2)*(L/2)) { // truncate forces after r = L/2
+        double sr6 = pow(r2, -3.0);
+        return 4*epsilon*sr6*(sr6 - 1) - lennard_jones_L_halves;
+    }
+    return 0;
+}
+
+double get_potential_energy(Particle S[], double (*get_interaction)(Particle[], int, int)) {
+    // Calculate total potental energy
+    double Epot = 0.0;
+    for(int i = 0; i < N; i++) {
+        for(int j = 0; j < i; j++) {
+            Epot += get_interaction(S, i, j);
+        }
+    }
+    return Epot;
+}
+
+double move_one_particle(Particle S0[], double (*get_interaction)(Particle[], int, int), int k, vec3 delta) {
+    double interaction_before = 0.0;
+    double interaction_after = 0.0;
+    for(int i = 0; i < N; i++) {
+        if(i == k) continue;
+        interaction_before += get_interaction(S0, k, i);
+    }
+    S0[k].x += delta.x;
+    S0[k].y += delta.y;
+    S0[k].z += delta.z;
+    for(int i = 0; i < N; i++) {
+        if(i == k) continue;
+        interaction_after += get_interaction(S0, k, i);
+    }
+    return interaction_after - interaction_before;
+}
+
+// Get random number uniformly distributed between min and max
+double sample_uniform(double min, double max) {
+    double x = rand()/(RAND_MAX + 1.0);
+    return min + x*(max - min);
+}
+
+double V0 = 0.0; // V0 is global to be used by measure()
+// Simulate the system with M(RT)^2
+Measure* metropolis(Particle S0[], double (*get_interaction)(Particle [], int, int), void (*get_forces)(Particle S[], vec3 F[]), Measure (*measure)(Particle S[], vec3 F[], double t), unsigned int steps, bool single_particle_moves, FILE* file) {
+    vec3* F = malloc(N * sizeof(vec3));
+    Particle* S1 = NULL;
+    if(single_particle_moves == false) { S1 = malloc(N * sizeof(Particle)); }
+
+    Particle* toFree = S1;
+
+    double V1 = 0.0;
+    V0 = 0.0;
+    // Single particle
+    double sp_delta1 = 0.0; // Length of the deterministic jump (proportional to the forces)
+    double sp_delta2 = 0.1; // Length of the random jump (proportional to a random direction)
+    // Many particles
+    double mp_delta1 = 0.0; // Length of the deterministic jump (proportional to the forces)
+    double mp_delta2 = 0.005; // Length of the random jump (proportional to a random direction)
+
+    // Scrivo in output lo stato iniziale
+    write_particles_to_file(S0, 0, file);
+
+    // Inizializzo le forze
+    get_forces(S0, F);
+
+    // Inizializzo l'energia potenziale
+    V0 = get_potential_energy(S0, get_interaction);
+
+    // Inizializzo le misure e misuro
+    Measure* measures = NULL;
+    if(measure) {
+        measures = calloc(steps + 1, sizeof(Measure));
+        measures[0] = measure(S0, F, 0.0);
+    }
+
+    int jumps = 0;
+    printf("Step: 0/%d", steps);
+    for(int i = 1; i <= steps; i++) {
+        if(single_particle_moves == true && i % 100 == 0) { 
+            printf("\rStep: %d/%d, Acceptance: %.2f", i, steps, jumps / (double)i / N); fflush(stdout); 
+        }else if(single_particle_moves == false && i % 100 == 0){ 
+            printf("\rStep: %d/%d, Acceptance: %.2f", i, steps, jumps / (double)i); fflush(stdout);
+        }
+        // Genero una nuova configurazione S1
+        if(single_particle_moves == true) {
+            // Muovo una particella alla volta, e ad ogni spostamento provo un salto
+            // Qui uso solo S0 dato che coinciderebbe sempre con S1
+            for(int k = 0; k < N; k++){
+                vec3 delta = (vec3){
+                    sp_delta1*F[k].x + sp_delta2*sample_uniform(-1,1),
+                    sp_delta1*F[k].y + sp_delta2*sample_uniform(-1,1),
+                    sp_delta1*F[k].z + sp_delta2*sample_uniform(-1,1),
+                };
+                double deltaV = move_one_particle(S0, get_interaction, k, delta);
+                // Calcolo la probabilità di salto alla nuova configurazione
+                V1 = V0 + deltaV;
+                double p_ratio = exp(-(V1 - V0)/Kb/T);
+                double a = (p_ratio > 1) ? 1 : p_ratio;
+                if(sample_uniform(0, 1) < a) {
+                    // Accetto il salto quindi preparo il potenziale per il prossimo ciclo
+                    V0 = V1;
+                    jumps += 1;
+                } else {
+                    // Inverto il movimento dato che rifiuto il salto
+                    S0[k].x -= delta.x;
+                    S0[k].y -= delta.y;
+                    S0[k].z -= delta.z;
+                }
+            }
+            get_forces(S0, F);
+        }else{
+            // Muovo tutte le particelle in un colpo solo
+            for(int k = 0; k < N; k++){
+                S1[k].x = S0[k].x + mp_delta1*F[k].x + mp_delta2*sample_uniform(-1,1);
+                S1[k].y = S0[k].y + mp_delta1*F[k].y + mp_delta2*sample_uniform(-1,1);
+                S1[k].z = S0[k].z + mp_delta1*F[k].z + mp_delta2*sample_uniform(-1,1);
+            }
+            // Calcolo la probabilità di salto alla configurazione S1
+            V1 = get_potential_energy(S1, get_interaction);
+            double p_ratio = exp(-(V1 - V0)/Kb/T);
+            double a = (p_ratio > 1) ? 1 : p_ratio;
+            // Se devo saltare salto
+            if(sample_uniform(0, 1) < a) {
+                // Preparo le forze e il potenziale per il prossimo ciclo
+                get_forces(S1, F);
+                V0 = V1;
+                // La posizione per il prossimo ciclo diventa S1 
+                swap_pointer((void**)&S0, (void**)&S1);
+                jumps += 1;
+            } 
+        }
+        // Ora, indipendentemente da se ho saltato o meno, S0 contiene le prossime posizioni (e velocità anche se in metropolis non hanno senso le v)
+        // Scrivo in output le nuove posizioni
+        write_particles_to_file(S0, i, file);
+        // Misura delle osservabili
+        if(measure && measures) {
+            measures[i] = measure(S0, F, i);
+        }
+        if(histogram && i >= steps/2) {
+            add_to_distribution_histogram(S0);
+        }
+    }
+    if(single_particle_moves == true){ 
+        printf("\rAcceptance: %f\n", jumps / ((double) steps) / N); 
+    } else { 
+        printf("\rAcceptance: %f\n", jumps / ((double) steps)); 
+    }
+
+    free(F);
+    free(toFree);
+
+    return measures;
+}
+
 void initialize_positions(Particle S0[]) {
     double a = L / (double)CROW;
-
-    printf("CROW = %d, N = %d, L = %f, T0 = %f, rho = %f\n", CROW, N, L, T, rho);
     
     vec3 CC[1]  = { (vec3){0, 0, 0} };
     vec3 BCC[2] = { (vec3){0, 0, 0}, (vec3){0.5, 0.5, 0.5} };
@@ -253,27 +418,7 @@ Measure measure(Particle S[], vec3 F[], double time) {
     double temperature = 2.0 / 3.0 / Kb * (Ek / N);
 
     // Potential energy
-    double a = L / (double)CROW;
-    double sigma2 = 1.0;
-    double sigma_su_L_mezzi_2 = sigma2 / (L/2) / (L/2);
-    double sigma_su_L_mezzi_6 = sigma_su_L_mezzi_2 * sigma_su_L_mezzi_2 * sigma_su_L_mezzi_2;
-    double V_L_mezzi = 4*epsilon*sigma_su_L_mezzi_6*(sigma_su_L_mezzi_6 - 1);
-    // 
-    double Epot = 0.0;
-    for(int i = 0; i < N; i++) {
-        for(int j = 0; j < i; j++) {
-            vec3 Rij = (vec3) {
-                (S[i].x - S[j].x) - L * rint((S[i].x - S[j].x)/L),
-                (S[i].y - S[j].y) - L * rint((S[i].y - S[j].y)/L),
-                (S[i].z - S[j].z) - L * rint((S[i].z - S[j].z)/L),
-            };
-            double r2 = Rij.x*Rij.x + Rij.y*Rij.y + Rij.z*Rij.z;
-            if(r2 < (L/2)*(L/2)) { // truncate forces after r = L/2
-                double sr6 = pow(sigma2 / r2, 3.0);
-                Epot += 4*epsilon*sr6*(sr6 - 1) - V_L_mezzi;
-            }
-        }
-    }
+    double Epot = get_potential_energy(S, lennard_jones_interaction);
     
     // Compressibilità
     double compressibilità = 1 + W_forces / 3.0 / rho / Kb / temperature;
@@ -283,9 +428,82 @@ Measure measure(Particle S[], vec3 F[], double time) {
     return (Measure) { temperature, compressibilità, (Ek + Epot) / N };
 }
 
+Measure measure_metropolis(Particle S[], vec3 F[], double time) {
+    // Potential energy
+    double Epot = V0; // get_potential_energy(S, lennard_jones_interaction);
+    
+    // Compressibilità
+    double compressibilità = 1 + W_forces / 3.0 / rho / Kb / T;
+
+    if(file_measures) fprintf(file_measures, "%10.5e %10.5e %10.5e %10.5e %10.5e %10.5e\n", time, T, 0.0, Epot / N, (0.0 + Epot) / N, compressibilità);
+
+    return (Measure) { T, compressibilità, (0.0 + Epot) / N };
+}
+
+Measure averages(Measure* measures, int start, int end) {
+    Measure avg = (Measure) {0, 0, 0};
+    for(int i = start; i < end; i++) { 
+        avg.temp += measures[i].temp; 
+        avg.comp += measures[i].comp; 
+        avg.ener += measures[i].ener; 
+    }
+    avg.temp /= end - start;
+    avg.comp /= end - start;
+    avg.ener /= end - start;
+    return avg;
+}
+
+Measure variances(Measure* measures, Measure avg, int start, int end) {
+    Measure var = (Measure) {0, 0, 0};
+    for(int i = start; i < end; i++) { 
+        var.temp += (measures[i].temp - avg.temp)*(measures[i].temp - avg.temp); 
+        var.comp += (measures[i].comp - avg.comp)*(measures[i].comp - avg.comp); 
+        var.ener += (measures[i].ener - avg.ener)*(measures[i].ener - avg.ener); 
+    }
+    var.temp /= end - start;
+    var.comp /= end - start;
+    var.ener /= end - start;
+    return var;
+}
+
+void averages_and_variances(Measure *measures, int steps) {
+    // Global Averages (on the second half of the data)
+    Measure avg = averages(measures, steps/2, steps);
+    Measure var = variances(measures, avg, steps/2, steps); // Meaningful only with vverlet
+
+    printf("Temperatura = %f ± %f\n", avg.temp, sqrt(var.temp));
+    printf("Compressibilità = %f ± %f\n", avg.comp, sqrt(var.comp));
+    printf("Energia = %f ± %2.5e\n", avg.ener, sqrt(var.ener));
+
+    // Variances for metropolis
+    int start = steps / 2;
+    int NN = steps - start; // Size of the data
+    FILE* varAvgBFile = fopen("varAvgB.dat", "w+");
+    for(int B = 1; B < NN / 2; B++) {  // Loop over the number of points per block
+        int NB = NN / B; // The number of blocks
+        Measure* avgB = malloc(sizeof(Measure) * NB); // Averages in the blocks 
+        for(int b = 0; b < NB; b++){
+            avgB[b] = averages(measures, start + B*b, start + B*(b + 1));
+        }
+        Measure varAvgB = variances(avgB, averages(avgB, 0, NB), 0, NB); // Variances in the blocks
+        fprintf(varAvgBFile, "%d %f %f\n", B, sqrt(varAvgB.ener / NB), sqrt(varAvgB.comp / NB));
+        free(avgB);
+    }
+
+}
+
 int main() {
     // Initialize constants
     L = CROW * pow(M / rho, 1.0/3.0); // rho = N/L3 = P3*M/L3
+    printf("CROW = %d, N = %d, L = %f, T0 = %f, rho = %f\n", CROW, N, L, T, rho);
+
+    // Calculate V(L/2)
+    {
+        double sigma2 = 1.0;
+        double sigma_su_L_mezzi_2 = sigma2 / (L/2) / (L/2);
+        double sigma_su_L_mezzi_6 = sigma_su_L_mezzi_2 * sigma_su_L_mezzi_2 * sigma_su_L_mezzi_2;
+        lennard_jones_L_halves = 4*epsilon*sigma_su_L_mezzi_6*(sigma_su_L_mezzi_6 - 1);
+    }
 
     // To use these you need to #define N 1
     // FILE* file_osc = fopen("file_osc.dat", "w+");
@@ -301,31 +519,11 @@ int main() {
     initialize_velocities(S0);
 
     FILE* file = NULL; // fopen("gas.dat", "w+");
-    unsigned int steps = 70000;
-    Measure* measures = vverlet(S0, lennard_jones, measure, 0.001, steps, file);
+    unsigned int steps = 8000;
+    // Measure* measures = vverlet(S0, lennard_jones, measure, 0.001, steps, file);
+    Measure* measures = metropolis(S0, lennard_jones_interaction, lennard_jones, measure_metropolis, steps, true, file);
 
-    // Averages, not numerically stable
-    Measure avg = (Measure) {0, 0, 0};
-    for(int i = steps / 2; i <= steps; i++) { 
-        avg.temp += measures[i].temp; 
-        avg.comp += measures[i].comp; 
-        avg.ener += measures[i].ener; 
-    }
-    avg.temp /= (steps / 2);
-    avg.comp /= (steps / 2);
-    avg.ener /= (steps / 2);
-    Measure sigma = (Measure) {0, 0, 0};
-    for(int i = steps / 2; i <= steps; i++) { 
-        sigma.temp += (measures[i].temp - avg.temp)*(measures[i].temp - avg.temp); 
-        sigma.comp += (measures[i].comp - avg.comp)*(measures[i].comp - avg.comp); 
-        sigma.ener += (measures[i].ener - avg.ener)*(measures[i].ener - avg.ener); 
-    }
-    sigma.temp /= (steps / 2);
-    sigma.comp /= (steps / 2);
-    sigma.ener /= (steps / 2);
-    printf("Temperatura = %f ± %f\n", avg.temp, sigma.temp);
-    printf("Compressibilità = %f ± %f\n", avg.comp, sigma.comp);
-    printf("Energia = %f ± %2.5e\n", avg.ener, sigma.ener);
+    averages_and_variances(measures, steps);
 
     // Scatter plot of particles' positions
     FILE* scatter = fopen("scatter.dat", "w+");
