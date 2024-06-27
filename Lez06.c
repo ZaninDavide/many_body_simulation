@@ -7,18 +7,27 @@
 
 #define CROW 4 // Number of cells in a row
 #define M 4 // Number of particles in a cell
-#define rho 0.8
 #define m 1.0
 #define Kb 1.0
-#define T 1.1
 #define epsilon 1.0
 #define PI 3.1415926535897932384626433
 #define BINS 150 // number of bins for the histogram of g(r)
 
 #define N (CROW*CROW*CROW*M) // Total number of particles
+double T = 0.0;
+double rho = 0.0; // fluid density
 double L = 0.0; // periodicity, will be overwritten
+
 double lennard_jones_L_halves = 0.0;
 double* histogram;
+
+
+// Single particle
+double sp_delta1 = 0.0; // Length of the deterministic jump (proportional to the forces)
+double sp_delta2 = 0.1; // Length of the random jump (proportional to a random direction)
+// Many particles
+double mp_delta1 = 0.0; // Length of the deterministic jump (proportional to the forces)
+double mp_delta2 = 0.005; // Length of the random jump (proportional to a random direction)
 
 typedef struct Particle {
     double x; double y; double z;
@@ -220,12 +229,6 @@ Measure* metropolis(Particle S0[], double (*get_interaction)(Particle [], int, i
 
     double V1 = 0.0;
     V0 = 0.0;
-    // Single particle
-    double sp_delta1 = 0.0; // Length of the deterministic jump (proportional to the forces)
-    double sp_delta2 = 0.1; // Length of the random jump (proportional to a random direction)
-    // Many particles
-    double mp_delta1 = 0.0; // Length of the deterministic jump (proportional to the forces)
-    double mp_delta2 = 0.005; // Length of the random jump (proportional to a random direction)
 
     // Scrivo in output lo stato iniziale
     write_particles_to_file(S0, 0, file);
@@ -466,7 +469,7 @@ Measure variances(Measure* measures, Measure avg, int start, int end) {
     return var;
 }
 
-void averages_and_variances(Measure *measures, int steps) {
+void averages_and_variances(Measure *measures, int steps, FILE* varAvgBFile) {
     // Global Averages (on the second half of the data)
     Measure avg = averages(measures, steps/2, steps);
     Measure var = variances(measures, avg, steps/2, steps); // Meaningful only with vverlet
@@ -478,7 +481,6 @@ void averages_and_variances(Measure *measures, int steps) {
     // Variances for metropolis
     int start = steps / 2;
     int NN = steps - start; // Size of the data
-    FILE* varAvgBFile = fopen("varAvgB.dat", "w+");
     for(int B = 1; B < NN / 2; B++) {  // Loop over the number of points per block
         int NB = NN / B; // The number of blocks
         Measure* avgB = malloc(sizeof(Measure) * NB); // Averages in the blocks 
@@ -486,46 +488,86 @@ void averages_and_variances(Measure *measures, int steps) {
             avgB[b] = averages(measures, start + B*b, start + B*(b + 1));
         }
         Measure varAvgB = variances(avgB, averages(avgB, 0, NB), 0, NB); // Variances in the blocks
-        fprintf(varAvgBFile, "%d %f %f\n", B, sqrt(varAvgB.ener / NB), sqrt(varAvgB.comp / NB));
+        if(varAvgBFile) fprintf(varAvgBFile, "%d %f %f\n", B, sqrt(varAvgB.ener / NB), sqrt(varAvgB.comp / NB));
         free(avgB);
     }
 
 }
 
-int main() {
-    // Initialize constants
+void initialize_constants() {
     L = CROW * pow(M / rho, 1.0/3.0); // rho = N/L3 = P3*M/L3
-    printf("CROW = %d, N = %d, L = %f, T0 = %f, rho = %f\n", CROW, N, L, T, rho);
 
     // Calculate V(L/2)
-    {
-        double sigma2 = 1.0;
-        double sigma_su_L_mezzi_2 = sigma2 / (L/2) / (L/2);
-        double sigma_su_L_mezzi_6 = sigma_su_L_mezzi_2 * sigma_su_L_mezzi_2 * sigma_su_L_mezzi_2;
-        lennard_jones_L_halves = 4*epsilon*sigma_su_L_mezzi_6*(sigma_su_L_mezzi_6 - 1);
-    }
+    double sigma2 = 1.0;
+    double sigma_su_L_mezzi_2 = sigma2 / (L/2) / (L/2);
+    double sigma_su_L_mezzi_6 = sigma_su_L_mezzi_2 * sigma_su_L_mezzi_2 * sigma_su_L_mezzi_2;
+    lennard_jones_L_halves = 4*epsilon*sigma_su_L_mezzi_6*(sigma_su_L_mezzi_6 - 1);
+    
+    V0 = 0;
+    W_forces = 0;
+    
+    printf("CROW = %d, N = %d, L = %f, T0 = %f, rho = %f\n", CROW, N, L, T, rho);
+}
 
+int main() {
     // To use these you need to #define N 1
     // FILE* file_osc = fopen("file_osc.dat", "w+");
     // Particle S0osc[] = { (Particle) { 1.0, 0.0, 0.0, 0.0, 0.0, 0.0 } };
     // vverlet(S0osc, oscillatore_armonico, NULL, 0.01, 5000, file_osc);
     // return 0;
 
-    file_measures = fopen("measures.dat", "w+");
-    histogram = calloc(BINS, sizeof(double));
+    double simulations[14][3] = {
+        // rho, T, sp_delta2
+        {1.200, 1.1, 0.10}, 
+        {0.010, 1.1, 0.50},
+        {0.800, 1.1, 0.13},
+        {0.700, 1.1, 0.13},
+        {0.600, 1.1, 0.13},
+        {0.100, 1.1, 0.50},
+        {1.000, 1.1, 0.10},
+        {0.750, 1.1, 0.13},
+        {0.200, 1.1, 0.50},
+        {0.400, 1.1, 0.13},
+        {0.001, 1.1, 0.13},
+        {0.500, 1.1, 0.13},
+        {0.300, 1.1, 0.13},
+        {0.250, 1.1, 0.13},
+    };
 
-    Particle* S0 = malloc(sizeof(Particle) * N);
-    initialize_positions(S0);
-    initialize_velocities(S0);
+    Particle* S0 = malloc(N * sizeof(Particle));
+    histogram = malloc(BINS * sizeof(double));
+    for(int k = 0; k < 14; k++){
+        char file_measures_name[20]; sprintf(file_measures_name, "measures_%02d.dat", k);
+        file_measures = fopen(file_measures_name, "w+");
+        memset(histogram, 0, BINS * sizeof(double));
 
-    FILE* file = NULL; // fopen("gas.dat", "w+");
-    unsigned int steps = 8000;
-    // Measure* measures = vverlet(S0, lennard_jones, measure, 0.001, steps, file);
-    Measure* measures = metropolis(S0, lennard_jones_interaction, lennard_jones, measure_metropolis, steps, true, file);
+        rho = simulations[k][0]; // Density
+        T = simulations[k][1]; // Random Jump Size
+        sp_delta2 = simulations[k][2]; // Random Jump Size
+        initialize_constants();
+        initialize_positions(S0);
+        initialize_velocities(S0);
 
-    averages_and_variances(measures, steps);
+        unsigned int steps = 10000;
+        // Measure* measures = vverlet(S0, lennard_jones, measure, 0.001, steps, NULL);
+        Measure* measures = metropolis(S0, lennard_jones_interaction, lennard_jones, measure_metropolis, steps, true, NULL);
+
+        char var_avg_B_file_name[20]; sprintf(var_avg_B_file_name, "varAvgB_%02d.dat", k);
+        FILE* var_avg_B_file = fopen(var_avg_B_file_name, "w+");
+        averages_and_variances(measures, steps, var_avg_B_file);
+
+        // Finalize and export histogram
+        // FILE* histogram_file = fopen("histogram.dat", "w+");
+        // save_distribution_histogram(histogram_file, steps);
+
+        free(measures);
+        fclose(file_measures);
+        fclose(var_avg_B_file);
+        // fclose(histogram_file);
+    }
 
     // Scatter plot of particles' positions
+    /*
     FILE* scatter = fopen("scatter.dat", "w+");
     vec3 center = (vec3) {L/2, L/2, L/2};
     for(int i = 0; i < N; i++) {
@@ -536,12 +578,7 @@ int main() {
         };
         fprintf(scatter, "%f %f %f\n", Ri.x, Ri.y, Ri.z);
     }
-
-    // Finalize and export histogram
-    FILE* histogram_file = fopen("histogram.dat", "w+");
-    save_distribution_histogram(histogram_file, steps);
-
-    free(measures);
+    */
 
     return 0;
 }

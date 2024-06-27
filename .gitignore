@@ -5,3 +5,4 @@ risultati.txt
 *.DS_Store
 Lez06.x
 old_plots/
+*.log
